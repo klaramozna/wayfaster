@@ -58,6 +58,22 @@ To train the model, execute the following command:
 python3 wayfaster/train.py --cfg_file configs/temporal_model.yaml
 ```
 
+### Inference and evaluation
+
+Two convenience scripts were added for running inference and evaluating the model on the validation set:
+
+- Run inference and save predicted traversability maps as compressed numpy files:
+```shell
+python3 scripts/infer.py --cfg_file configs/temporal_model.yaml --checkpoint checkpoints/last.ckpt --output_dir outputs/infer
+```
+
+- Run evaluation to compute the average traversability loss/error on the validation dataset:
+```shell
+python3 scripts/evaluate.py --cfg_file configs/temporal_model.yaml --checkpoint checkpoints/last.ckpt
+```
+
+Both scripts load the configuration via `configs/temporal_model.yaml`, construct the dataset, load the checkpoint and run the model on the validation split. Use `--device cpu` to force CPU execution.
+
 ### Debugging with Weights & Biases
 
 This project leverages Weights & Biases (wandb) for comprehensive experiment tracking and debugging.

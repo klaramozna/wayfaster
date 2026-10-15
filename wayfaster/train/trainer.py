@@ -1,15 +1,22 @@
+from os import path
+
+from matplotlib.pylab import rint
+from matplotlib.pyplot import grid
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+import torchvision.utils as vutils
 
 from .utils import path_to_map
 from models.traversability_net import TravNet
+
 
 class TrainingModule(pl.LightningModule):
     """
     Training module for the TravNet model using PyTorch Lightning.
     """
+
     def __init__(self, configs):
         """
         Initialize the TrainingModule.
@@ -18,23 +25,33 @@ class TrainingModule(pl.LightningModule):
             configs (object): Configuration object containing training parameters.
         """
         super().__init__()
-        # Save hyperparamters to hparams.yaml
+
+        # Save hyperparameters to hparams.yaml
         self.save_hyperparameters()
-        
+
         # Get training params
         self.eps = 1e-6
-        gamma = torch.tensor([configs.TRAINING.GAMMA**i for i in range(configs.TRAINING.HORIZON)])
-        self.gamma = nn.Parameter(gamma, requires_grad=False)
+
+        gamma = torch.tensor([
+            configs.TRAINING.GAMMA**i
+            for i in range(configs.TRAINING.HORIZON)
+        ])
+
+        self.gamma = nn.Parameter(
+            gamma,
+            requires_grad=False
+        )
+
         self.learning_rate = configs.OPTIMIZER.LR
         self.weight_decay = configs.OPTIMIZER.WEIGHT_DECAY
         self.depth_weight = configs.TRAINING.DEPTH_WEIGHT
-        
+
         # Depth training
         self.train_depth = configs.MODEL.TRAIN_DEPTH
-        
+
         # Depth prediction
         self.predict_depth = configs.MODEL.PREDICT_DEPTH
-        
+
         # Mapping Model
         self.model = TravNet(
             configs.MODEL.GRID_BOUNDS,
@@ -48,17 +65,39 @@ class TrainingModule(pl.LightningModule):
 
         # Set grid bounds
         self.grid_bounds = configs.MODEL.GRID_BOUNDS
+
         self.map_size = (
-            int((self.grid_bounds['xbound'][1] - self.grid_bounds['xbound'][0])/self.grid_bounds['xbound'][2]),
-            int((self.grid_bounds['ybound'][1] - self.grid_bounds['ybound'][0])/self.grid_bounds['ybound'][2]))
+            int(
+                (
+                    self.grid_bounds['xbound'][1]
+                    - self.grid_bounds['xbound'][0]
+                )
+                / self.grid_bounds['xbound'][2]
+            ),
+            int(
+                (
+                    self.grid_bounds['ybound'][1]
+                    - self.grid_bounds['ybound'][0]
+                )
+                / self.grid_bounds['ybound'][2]
+            )
+        )
 
         self.map_origin = (
-            int((self.grid_bounds['xbound'][1])/self.grid_bounds['xbound'][2]),
-            int((self.grid_bounds['ybound'][1])/self.grid_bounds['ybound'][2]))
+            int(
+                self.grid_bounds['xbound'][1]
+                / self.grid_bounds['xbound'][2]
+            ),
+            int(
+                self.grid_bounds['ybound'][1]
+                / self.grid_bounds['ybound'][2]
+            )
+        )
 
         self.map_resolution = (
             self.grid_bounds['xbound'][2],
-            self.grid_bounds['ybound'][2])
+            self.grid_bounds['ybound'][2]
+        )
 
         # Visualization rate
         self.vis_interval = configs.TRAINING.VIS_INTERVAL
@@ -66,232 +105,690 @@ class TrainingModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """
         Perform a single training step.
-
-        Args:
-            batch (tuple): Batch of data containing images, point clouds, intrinsics, extrinsics, paths, targets, and masks.
-            batch_idx (int): Index of the batch.
-
-        Returns:
-            torch.Tensor: Training loss.
         """
+
         # Get data
-        color_img, pcloud, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
+        (
+            color_img,
+            pcloud,
+            inv_intrinsics,
+            extrinsics,
+            path,
+            target_trav,
+            trav_weights,
+            depth_target,
+            depth_mask
+        ) = batch
 
         # Forward pass
-        trav_map, pred_depth, debug = self.model(color_img, pcloud, inv_intrinsics, extrinsics, depth_target)
+        trav_map, pred_depth, debug = self.model(
+            color_img,
+            pcloud,
+            inv_intrinsics,
+            extrinsics,
+            depth_target
+        )
 
         # Project path to map
-        executed_path = path_to_map(path.unsqueeze(1), torch.ones_like(path[...,0,0]).unsqueeze(1), self.map_size, self.map_resolution, self.map_origin)
+        executed_path = path_to_map(
+            path.unsqueeze(1),
+            torch.ones_like(
+                path[..., 0, 0]
+            ).unsqueeze(1),
+            self.map_size,
+            self.map_resolution,
+            self.map_origin
+        )
 
         # Calculate traversability loss
-        trav_loss, _ = self.trav_criterion(path, trav_map, target_trav, trav_weights)
+        trav_loss, _ = self.trav_criterion(
+            path,
+            trav_map,
+            target_trav,
+            trav_weights
+        )
 
         # Calculate depth classification loss
-        depth_target = depth_target.view(-1, *depth_target.shape[2:])
-        depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
-        depth_loss = self.depth_criterion(pred_depth, depth_target, depth_mask)
+        depth_target = depth_target.view(
+            -1,
+            *depth_target.shape[2:]
+        )
+
+        depth_mask = depth_mask.view(
+            -1,
+            *depth_mask.shape[2:]
+        )
+
+        depth_loss = self.depth_criterion(
+            pred_depth,
+            depth_target,
+            depth_mask
+        )
 
         if self.train_depth:
-            loss = trav_loss + self.depth_weight*depth_loss
+            loss = (
+                trav_loss
+                + self.depth_weight * depth_loss
+            )
         else:
             loss = trav_loss
 
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='train')
+            self.visualize(
+                color_img,
+                pcloud,
+                trav_map,
+                pred_depth,
+                depth_target,
+                depth_mask,
+                debug,
+                executed_path,
+                prefix='train'
+            )
 
-        # Logging to TensorBoard by default
-        self.log("train_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("train_depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
+        # Logging
+        self.log(
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
+
+        self.log(
+            "train_trav_loss",
+            trav_loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
+
+        self.log(
+            "train_depth_loss",
+            depth_loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         """
         Perform a single validation step.
-
-        Args:
-            batch (tuple): Batch of data containing images, point clouds, intrinsics, extrinsics, paths, targets, and masks.
-            batch_idx (int): Index of the batch.
-
-        Returns:
-            torch.Tensor: Validation loss.
         """
+
         # Get data
-        color_img, pcloud, inv_intrinsics, extrinsics, path, target_trav, trav_weights, depth_target, depth_mask = batch
+        (
+            color_img,
+            pcloud,
+            inv_intrinsics,
+            extrinsics,
+            path,
+            target_trav,
+            trav_weights,
+            depth_target,
+            depth_mask
+        ) = batch
 
         # Forward pass
-        trav_map, pred_depth, debug = self.model(color_img, pcloud, inv_intrinsics, extrinsics, depth_target)
+        trav_map, pred_depth, debug = self.model(
+            color_img,
+            pcloud,
+            inv_intrinsics,
+            extrinsics,
+            depth_target
+        )
 
         # Project path to map
-        executed_path = path_to_map(path.unsqueeze(1), torch.ones_like(path[...,0,0]).unsqueeze(1), self.map_size, self.map_resolution, self.map_origin)
+        executed_path = path_to_map(
+            path.unsqueeze(1),
+            torch.ones_like(
+                path[..., 0, 0]
+            ).unsqueeze(1),
+            self.map_size,
+            self.map_resolution,
+            self.map_origin
+        )
 
         # Calculate traversability loss
-        trav_loss, trav_error = self.trav_criterion(path, trav_map, target_trav, trav_weights)
+        trav_loss, trav_error = self.trav_criterion(
+            path,
+            trav_map,
+            target_trav,
+            trav_weights
+        )
 
         # Calculate depth classification loss
-        depth_target = depth_target.view(-1, *depth_target.shape[2:])
-        depth_mask = depth_mask.view(-1, *depth_mask.shape[2:])
-        depth_loss = self.depth_criterion(pred_depth, depth_target, depth_mask)
+        depth_target = depth_target.view(
+            -1,
+            *depth_target.shape[2:]
+        )
+
+        depth_mask = depth_mask.view(
+            -1,
+            *depth_mask.shape[2:]
+        )
+
+        depth_loss = self.depth_criterion(
+            pred_depth,
+            depth_target,
+            depth_mask
+        )
 
         if self.train_depth:
-            loss = trav_loss + self.depth_weight*depth_loss
+            loss = (
+                trav_loss
+                + self.depth_weight * depth_loss
+            )
         else:
             loss = trav_loss
 
         # Visualize results
         if (batch_idx % self.vis_interval) == 0:
-            self.visualize(color_img, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='valid')
+            self.visualize(
+                color_img,
+                pcloud,
+                trav_map,
+                pred_depth,
+                depth_target,
+                depth_mask,
+                debug,
+                executed_path,
+                prefix='valid'
+            )
 
-        # Logging to TensorBoard by default
-        self.log("valid_loss", loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_trav_loss", trav_loss, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_trav_error", trav_error, on_step=False, on_epoch=True, sync_dist=True)
-        self.log("valid_depth_loss", depth_loss, on_step=False, on_epoch=True, sync_dist=True)
+        # Logging
+        self.log(
+            "valid_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
+
+        self.log(
+            "valid_trav_loss",
+            trav_loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
+
+        self.log(
+            "valid_trav_error",
+            trav_error,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
+
+        self.log(
+            "valid_depth_loss",
+            depth_loss,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True
+        )
 
         return loss
 
     def configure_optimizers(self):
         """
         Configure the optimizers and learning rate scheduler.
-
-        Returns:
-            list: List containing the optimizer and the scheduler.
         """
+
         model_params = self.model.parameters()
-        optimizer = torch.optim.AdamW(model_params, lr=self.learning_rate, weight_decay=self.weight_decay)
-        
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=1e-5)
-        
+
+        optimizer = torch.optim.AdamW(
+            model_params,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay
+        )
+
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=10,
+            eta_min=1e-5
+        )
+
         return [optimizer], [scheduler]
-    
-    def trav_criterion(self, states, trav_map, target_trav, target_weights):
+
+    def trav_criterion(
+        self,
+        states,
+        trav_map,
+        target_trav,
+        target_weights
+    ):
         """
         Calculate the traversability loss.
-
-        Args:
-            states (torch.Tensor): Tensor containing the states.
-            trav_map (torch.Tensor): Tensor containing the traversability map.
-            target_trav (torch.Tensor): Tensor containing the target traversability.
-            target_weights (torch.Tensor): Tensor containing the target weights.
-
-        Returns:
-            tuple: Tuple containing the loss and the error.
         """
-        # Calculate traversability
-        idxu = 2 * (states[...,0] - self.grid_bounds['xbound'][0]) / (self.grid_bounds['xbound'][1] - self.grid_bounds['xbound'][0]) - 1
-        idxv = 2 * (states[...,1] - self.grid_bounds['ybound'][0]) / (self.grid_bounds['ybound'][1] - self.grid_bounds['ybound'][0]) - 1
-        grid = torch.stack((-idxv, -idxu), -1).unsqueeze(1)
-        mask = (grid[...,0] >= -1) * (grid[...,0] <= 1) * (grid[...,1] >= -1) * (grid[...,1] <= 1)
-        
-        # Sample from map
-        traversability = F.grid_sample(trav_map, grid, align_corners=True)
-        traversability = traversability.permute((0,2,3,1)).squeeze(1)
-        
-        # Calculate loss
-        gamma = self.gamma[:traversability.shape[1]].view(1,-1,1).expand(traversability.shape[0],-1,2)
-        error = F.smooth_l1_loss(traversability, target_trav, reduction='none', beta=0.1)
-        loss = error * target_weights * gamma
-        loss = torch.mean(loss[mask.squeeze(1),:])
 
-        # Calculate error
-        error = torch.mean(error[mask.squeeze(1),:])
+        # ==========================================================
+        # CALCULATE MAP COORDINATES
+        # ==========================================================
+
+        idxu = (
+            2
+            * (
+                states[..., 0]
+                - self.grid_bounds['xbound'][0]
+            )
+            / (
+                self.grid_bounds['xbound'][1]
+                - self.grid_bounds['xbound'][0]
+            )
+            - 1
+        )
+
+        idxv = (
+            2
+            * (
+                states[..., 1]
+                - self.grid_bounds['ybound'][0]
+            )
+            / (
+                self.grid_bounds['ybound'][1]
+                - self.grid_bounds['ybound'][0]
+            )
+            - 1
+        )
+
+        grid = torch.stack(
+            (-idxv, -idxu),
+            -1
+        ).unsqueeze(1)
+
+        # ==========================================================
+        # FINITE MASK
+        # ==========================================================
+
+        finite_mask = torch.isfinite(
+            states[..., 0]
+        ) & torch.isfinite(
+            states[..., 1]
+        )
+
+        # ==========================================================
+        # INSIDE-MAP MASK
+        # ==========================================================
+
+        inside_map_mask = (
+            (grid[..., 0] >= -1)
+            & (grid[..., 0] <= 1)
+            & (grid[..., 1] >= -1)
+            & (grid[..., 1] <= 1)
+        )
+
+        # ==========================================================
+        # FINAL VALID MASK
+        # ==========================================================
+
+        mask = (
+            finite_mask
+            & inside_map_mask.squeeze(1)
+        )
+
+        final_valid_count = int(
+            mask.sum().item()
+        )
+
+        # ==========================================================
+        # DEBUG IF NOTHING IS VALID
+        # ==========================================================
+
+        if final_valid_count == 0:
+
+            print(
+                "\n"
+                "============================================================"
+            )
+
+            print(
+                "TRAV DEBUG: NO VALID TRAJECTORY POINTS"
+            )
+
+            print(
+                "============================================================"
+            )
+
+            print(
+                "states shape:",
+                tuple(states.shape)
+            )
+
+            print(
+                "trav_map shape:",
+                tuple(trav_map.shape)
+            )
+
+            print(
+                "grid shape:",
+                tuple(grid.shape)
+            )
+
+            print(
+                "\nGRID BOUNDS:"
+            )
+
+            print(
+                "xbound:",
+                self.grid_bounds['xbound']
+            )
+
+            print(
+                "ybound:",
+                self.grid_bounds['ybound']
+            )
+
+            print(
+                "\nMAP:"
+            )
+
+            print(
+                "map_size:",
+                self.map_size
+            )
+
+            print(
+                "map_origin:",
+                self.map_origin
+            )
+
+            print(
+                "map_resolution:",
+                self.map_resolution
+            )
+
+            # ------------------------------------------------------
+            # FINITE STATE DEBUG
+            # ------------------------------------------------------
+
+            finite_count = int(
+                finite_mask.sum().item()
+            )
+
+            print(
+                "\nFINITE XY POINTS:",
+                finite_count
+            )
+
+            if finite_count > 0:
+
+                finite_xy = states[
+                    ..., :2
+                ][finite_mask]
+
+                print(
+                    "finite x range:",
+                    float(finite_xy[:, 0].min().item()),
+                    "to",
+                    float(finite_xy[:, 0].max().item())
+                )
+
+                print(
+                    "finite y range:",
+                    float(finite_xy[:, 1].min().item()),
+                    "to",
+                    float(finite_xy[:, 1].max().item())
+                )
+
+                print(
+                    "\nFIRST 20 FINITE XY:"
+                )
+
+                print(
+                    finite_xy[:20]
+                )
+
+            else:
+
+                print(
+                    "NO FINITE XY VALUES EXIST"
+                )
+
+            # ------------------------------------------------------
+            # GRID DEBUG
+            # ------------------------------------------------------
+
+            finite_grid = torch.isfinite(
+                grid
+            ).all(dim=-1)
+
+            finite_grid_count = int(
+                finite_grid.sum().item()
+            )
+
+            print(
+                "\nFINITE GRID POINTS:",
+                finite_grid_count
+            )
+
+            if finite_grid_count > 0:
+
+                finite_grid_values = grid[
+                    finite_grid
+                ]
+
+                print(
+                    "grid value range:"
+                )
+
+                print(
+                    "  first coordinate:",
+                    float(
+                        finite_grid_values[..., 0].min().item()
+                    ),
+                    "to",
+                    float(
+                        finite_grid_values[..., 0].max().item()
+                    )
+                )
+
+                print(
+                    "  second coordinate:",
+                    float(
+                        finite_grid_values[..., 1].min().item()
+                    ),
+                    "to",
+                    float(
+                        finite_grid_values[..., 1].max().item()
+                    )
+                )
+
+            # ------------------------------------------------------
+            # MASK COUNTS
+            # ------------------------------------------------------
+
+            print(
+                "\nMASK COUNTS:"
+            )
+
+            print(
+                "finite:",
+                int(finite_mask.sum().item())
+            )
+
+            print(
+                "inside map:",
+                int(inside_map_mask.squeeze(1).sum().item())
+            )
+
+            print(
+                "both:",
+                final_valid_count
+            )
+
+            # ------------------------------------------------------
+            # FIRST STATES
+            # ------------------------------------------------------
+
+            print(
+                "\nFIRST 20 STATES:"
+            )
+
+            print(
+                states.reshape(-1, states.shape[-1])[:20]
+            )
+
+            print(
+                "\n============================================================"
+            )
+
+            raise RuntimeError(
+                "TRAV DEBUG: no trajectory points are both "
+                "finite and inside the map."
+            )
+
+        # ==========================================================
+        # SAMPLE FROM MAP
+        # ==========================================================
+
+        traversability = F.grid_sample(
+            trav_map,
+            grid,
+            align_corners=True
+        )
+
+        traversability = traversability.permute(
+            (0, 2, 3, 1)
+        ).squeeze(1)
+
+        # ==========================================================
+        # CALCULATE LOSS
+        # ==========================================================
+
+        gamma = self.gamma[
+            :traversability.shape[1]
+        ].view(
+            1,
+            -1,
+            1
+        ).expand(
+            traversability.shape[0],
+            -1,
+            2
+        )
+
+        error = F.smooth_l1_loss(
+            traversability,
+            target_trav,
+            reduction='none',
+            beta=0.1
+        )
+
+        loss = (
+            error
+            * target_weights
+            * gamma
+        )
+
+        loss = torch.mean(
+            loss[mask, :]
+        )
+
+        # ==========================================================
+        # CALCULATE ERROR
+        # ==========================================================
+
+        error = torch.mean(
+            error[mask, :]
+        )
 
         return loss, error
-    
-    def depth_criterion(self, prediction, target, mask):
+
+    def depth_criterion(
+        self,
+        prediction,
+        target,
+        mask
+    ):
         """
         Calculate the depth classification loss.
-
-        Args:
-            prediction (torch.Tensor): Tensor containing the predicted depth.
-            target (torch.Tensor): Tensor containing the target depth.
-            mask (torch.Tensor): Tensor containing the mask.
-
-        Returns:
-            torch.Tensor: Depth loss.
         """
-        loss = F.cross_entropy(prediction, target, reduction='none') * mask
+
+        loss = (
+            F.cross_entropy(
+                prediction,
+                target,
+                reduction='none'
+            )
+            * mask
+        )
+
         return torch.mean(loss)
 
-    def visualize(self, image, pcloud, trav_map, pred_depth, depth_target, depth_mask, debug, executed_path, prefix='train'):
-        """
-        Visualize the training/validation results.
+    def visualize(
+        self,
+        color_img,
+        pcloud,
+        trav_map,
+        pred_depth,
+        depth_target,
+        depth_mask,
+        debug,
+        executed_path,
+        prefix='train'
+    ):
+        import torchvision.utils as vutils
+        import wandb
+        import torch
 
-        Args:
-            image (torch.Tensor): Tensor containing the images.
-            pcloud (torch.Tensor): Tensor containing the point clouds.
-            trav_map (torch.Tensor): Tensor containing the traversability map.
-            pred_depth (torch.Tensor): Tensor containing the predicted depth.
-            depth_target (torch.Tensor): Tensor containing the target depth.
-            depth_mask (torch.Tensor): Tensor containing the depth mask.
-            debug (torch.Tensor): Tensor containing the debug information.
-            executed_path (torch.Tensor): Tensor containing the executed path.
-            prefix (str): Prefix for the log keys.
-        """
-        # Visualize the camera inputs
-        self.logger.log_image(
-            key = prefix + "_images",
-            images = [image.view(-1,*image.shape[2:])]
-        )
-        
-        # Visualize the input point cloud
-        pcloud = torch.mean(pcloud, dim=2, keepdim=True)
-        pcloud = pcloud.view(-1,*pcloud.shape[2:])
-        self.logger.log_image(
-            key = prefix + "_pcloud",
-            images = [pcloud]
-        )
+        # Ensure color_img is [B, C, H, W]
+        if not torch.is_tensor(color_img):
+            color_img = torch.tensor(color_img)
 
-        # Visualize the traversability map
-        self.logger.log_image(
-            key = prefix + "_mu",
-            images = [trav_map[:,:1]]
-        )
+        # If more than 4 dims, flatten sequence into batch
+        if color_img.ndim > 4:
+            color_img = color_img.reshape(
+                -1,
+                *color_img.shape[-3:]
+            )
 
-        self.logger.log_image(
-            key = prefix + "_nu",
-            images = [trav_map[:,1:]]
-        )
+        if color_img.ndim != 4:
+            print(
+                f"[visualize] Unexpected color_img shape: "
+                f"{color_img.shape}"
+            )
+            return
 
-        # Visualize the depth prediction
-        n_d = (self.grid_bounds['dbound'][1] - self.grid_bounds['dbound'][0])/self.grid_bounds['dbound'][2]
-        depth_pred = torch.argmax(pred_depth, dim=1, keepdim=True)/(n_d-1)
-        self.logger.log_image(
-            key = prefix + "_depth_pred",
-            images = [depth_pred]
-        )
+        B, C, H, W = color_img.shape
 
-        # Visualize the depth target
-        if self.predict_depth:
-            depth_target = depth_target.unsqueeze(1)/(n_d-1)
-        else:
-            depth_target = depth_target.argmax(1).unsqueeze(1)/(n_d-1)
+        # Make grid with max 6 images per row
+        nrow = min(B, 6)
 
-        self.logger.log_image(
-            key = prefix + "_depth_target",
-            images = [depth_target]
-        )
+        try:
+            grid = vutils.make_grid(
+                color_img,
+                nrow=nrow,
+                normalize=True
+            )
 
-        # Visualize the depth mask
-        self.logger.log_image(
-            key = prefix + "_depth_mask",
-            images = [depth_mask.unsqueeze(1)]
-        )
+        except Exception as e:
+            print(
+                f"[visualize] make_grid failed: {e}"
+            )
+            return
 
-        # Visualize the debug output
-        temp = torch.sum(debug, dim=1, keepdim=True)
-        temp = (temp-torch.min(temp))/(torch.max(temp)-torch.min(temp))
-        self.logger.log_image(
-            key = prefix + "_debug",
-            images = [temp]
-        )
+        grid_np = grid.permute(
+            1,
+            2,
+            0
+        ).cpu().numpy()
 
-        # Visualize the executed path
-        executed_path = executed_path/(torch.amax(executed_path, (1,2,3), keepdim=True)+self.eps)
-        self.logger.log_image(
-            key = prefix + "_path",
-            images = [executed_path]
-        )
+        # Log to W&B safely
+        if self.logger is not None:
+            try:
+                self.logger.log_image(
+                    key=f"{prefix}_color_grid",
+                    images=[
+                        wandb.Image(grid_np)
+                    ]
+                )
+
+            except Exception as e:
+                print(
+                    f"[visualize] W&B logging failed: {e}"
+                )
