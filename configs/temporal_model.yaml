@@ -1,8 +1,8 @@
 TAG: 'temporal'
 
 DATASET:
-    TRAIN_DATA: ['dataset/mydata/data_train', 'dataset/mydata/data_train']
-    VALID_DATA: ['dataset/mydata/data_valid', 'dataset/mydata/data_valid']
+    TRAIN_DATA: ['dataset/mydata/data_train_ordered']
+    VALID_DATA: ['dataset/mydata/data_valid_ordered']
 
 OPTIMIZER:
     LR: 0.0001
