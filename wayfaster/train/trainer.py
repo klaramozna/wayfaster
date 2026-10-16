@@ -732,6 +732,9 @@ class TrainingModule(pl.LightningModule):
         executed_path,
         prefix='train'
     ):
+        if self.logger is None or not hasattr(self.logger, 'log_image'):
+            return
+
         import torchvision.utils as vutils
         import wandb
         import torch

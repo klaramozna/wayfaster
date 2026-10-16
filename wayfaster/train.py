@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 import torchvision.transforms as transforms
 
 from torch.utils.data import DataLoader
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
@@ -66,10 +66,10 @@ def main():
         pretrained_dict = torch.load(configs.MODEL.LOAD_NETWORK, map_location='cpu')['state_dict']
         model.load_state_dict(pretrained_dict)
 
-    # Initialize logger
-    wandb_logger = WandbLogger(
-        project="WayFASTER",
-        log_model="all",
+    # Store epoch metrics locally instead of requiring an external service.
+    local_logger = CSVLogger(
+        save_dir='logs',
+        name='wayfaster'
     )
 
     # Set up checkpoint callback
@@ -90,7 +90,7 @@ def main():
         sync_batchnorm          = True,
         enable_model_summary    = True,
         accelerator             = 'gpu',
-        logger                  = wandb_logger,
+        logger                  = local_logger,
         default_root_dir        = 'checkpoints',
         max_epochs              = configs.TRAINING.EPOCHS,
         precision               = configs.TRAINING.PRECISION,
